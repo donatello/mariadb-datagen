@@ -10,8 +10,8 @@ $ docker run --detach --name some-mariadb \
      --env MYSQL_PASSWORD=mariauser123 \
      --env MYSQL_ROOT_PASSWORD=secretpassword  \
      --publish 3306:3306/tcp \
-     docker.io/library/mariadb:10.4
-
+     docker.io/library/mariadb:10.4 \
+     --innodb_buffer_pool_size=8G --innodb_log_file_size=8G
 ``` 
 
 To connect to the server, use the docker container IP ([doc](https://mariadb.com/kb/en/installing-and-using-mariadb-via-docker/)) - localhost does not work.

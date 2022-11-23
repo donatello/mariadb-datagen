@@ -11,25 +11,30 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
-	dsn     string
-	testDB  string
-	sizeStr string
+	dsn             string
+	testDB          string
+	sizeStr         string
+	bulkInsertCount int
+	rowSizeBytes    int64
 
 	sizeMB  int64
-	threads int
+	threads int64
 )
 
 func init() {
 	flag.StringVar(&dsn, "dsn", "root:secretpassword@tcp(localhost)/mysql", "MariaDB DSN")
 	flag.StringVar(&testDB, "test-db", "", "Database to create")
 	flag.StringVar(&sizeStr, "size", "1G", "Database size to generate ('3' or '3G' => 3GB, '10M' => 10MB, '1T' => 1TB)")
-	flag.IntVar(&threads, "threads", 1, "Number of threads to use")
+	flag.Int64Var(&threads, "threads", 1, "Number of threads to use")
+	flag.IntVar(&bulkInsertCount, "bulk-count", 4000, "Number of rows to insert per query")
+	flag.Int64Var(&rowSizeBytes, "row-size-bytes", 2048, "Row size in bytes")
 }
 
 func validateFlags() error {
@@ -146,22 +151,8 @@ func GenData(n int) string {
 	return string(r)
 }
 
-func (db *DB) InsertRows(ctx context.Context, name string, count, rlen int) error {
-	rows := make([]any, count)
-	qmarks := make([]string, count)
-	rlen -= 8 // 8 bytes of data will be present for the id already.
-	for i := range rows {
-		rows[i] = GenData(rlen)
-		qmarks[i] = "(?)"
-	}
-
-	qmarksStr := strings.Join(qmarks, ",")
-	query := fmt.Sprintf("INSERT INTO %s (data) VALUES %s", name, qmarksStr)
-	stmt, err := db.c.PrepareContext(ctx, query)
-	if err != nil {
-		return err
-	}
-
+func (db *DB) InsertRows(ctx context.Context, stmt *sql.Stmt, rows []any, count int) error {
+	start := time.Now()
 	r, err := stmt.ExecContext(ctx, rows...)
 	if err != nil {
 		return err
@@ -173,6 +164,7 @@ func (db *DB) InsertRows(ctx context.Context, name string, count, rlen int) erro
 	if affected != int64(count) {
 		return fmt.Errorf("Expected to insert %d rows, but inserted %d", count, affected)
 	}
+	log.Printf("Insert %d rows: took %s\n", count, time.Since(start))
 	return nil
 }
 
@@ -192,23 +184,38 @@ func main() {
 	defer db.Close()
 	log.Printf("Created database. Populating...")
 
-	const (
-		rowSize      = 2048 // 2KiB
-		randDataSize = rowSize - 8
-	)
-
 	var (
+		// Random data per row (8 bytes come from the row ID)
+		randDataSize = int(rowSizeBytes - 8)
+
 		totalDataSizeBytes float64 = float64(sizeMB * 1000 * 1000)
 		// Data per table:
 		perThreadBytes float64 = math.Ceil(totalDataSizeBytes / float64(threads))
 		// Row count per table:
-		numRows int64 = int64(math.Ceil(perThreadBytes / rowSize))
+		numRows int64 = int64(math.Ceil(perThreadBytes / float64(rowSizeBytes)))
+		// Total insert queries:
+		totalInserts = threads * ((numRows + int64(bulkInsertCount) - 1) / int64(bulkInsertCount))
 	)
 
 	fmt.Printf("Generating %d table(s) with %d rows (2KiB each) per table\n", threads, numRows)
 
+	rowsCh := make(chan []any, 2*threads)
+	go func() {
+		defer close(rowsCh)
+		for i := int64(0); i < totalInserts; i++ {
+			// start := time.Now()
+			rows := make([]any, bulkInsertCount)
+			for i := range rows {
+				rows[i] = GenData(randDataSize)
+			}
+			rowsCh <- rows
+			// datagenDur := time.Since(start)
+		}
+	}()
+
+	// Launch threads to create tables.
 	wg := sync.WaitGroup{}
-	for i := 0; i < threads; i++ {
+	for i := int64(0); i < threads; i++ {
 		wg.Add(1)
 		go func(tableName string) {
 			defer wg.Done()
@@ -218,17 +225,24 @@ func main() {
 				panic(err)
 			}
 
-			remainingRows := numRows
-			for remainingRows > 0 {
-				rowCount := 4000
-				if remainingRows < int64(rowCount) {
-					rowCount = int(remainingRows)
-				}
-				err = db.InsertRows(ctx, tableName, rowCount, rowSize)
+			// Build prepared query for this thread/table.
+			qmarks := make([]string, bulkInsertCount)
+			for i := range qmarks {
+				qmarks[i] = "(?)"
+			}
+			qmarksStr := strings.Join(qmarks, ",")
+			q := fmt.Sprintf("INSERT INTO %s (data) VALUES %s", tableName, qmarksStr)
+			stmt, err := db.c.PrepareContext(ctx, q)
+			if err != nil {
+				log.Fatalf("Error preparing statement: %v", err)
+			}
+
+			for inserted := int64(0); inserted < numRows; inserted += int64(bulkInsertCount) {
+				rows := <-rowsCh
+				err = db.InsertRows(ctx, stmt, rows, bulkInsertCount)
 				if err != nil {
 					panic(err)
 				}
-				remainingRows -= int64(rowCount)
 			}
 		}(fmt.Sprintf("table%03d", i))
 	}
