@@ -26,3 +26,12 @@ $ docker run -it --rm \
 
 ```
 
+## Running the tool
+
+``` sh
+./mariadb-datagen -test-db x13 -threads 16 -size 16G
+2022/11/22 13:59:45 Created database. Populating...
+Generating 16 table(s) with 488282 rows (2KiB each) per table
+done.
+
+```
