@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/cheggaaa/pb/v3"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -152,7 +152,7 @@ func GenData(n int) string {
 }
 
 func (db *DB) InsertRows(ctx context.Context, stmt *sql.Stmt, rows []any, count int) error {
-	start := time.Now()
+	// start := time.Now()
 	r, err := stmt.ExecContext(ctx, rows...)
 	if err != nil {
 		return err
@@ -164,7 +164,7 @@ func (db *DB) InsertRows(ctx context.Context, stmt *sql.Stmt, rows []any, count 
 	if affected != int64(count) {
 		return fmt.Errorf("Expected to insert %d rows, but inserted %d", count, affected)
 	}
-	log.Printf("Insert %d rows: took %s\n", count, time.Since(start))
+	// log.Printf("Insert %d rows: took %s\n", count, time.Since(start))
 	return nil
 }
 
@@ -182,7 +182,6 @@ func main() {
 		log.Fatalf("Error initializing database: %v", err)
 	}
 	defer db.Close()
-	log.Printf("Created database. Populating...")
 
 	var (
 		// Random data per row (8 bytes come from the row ID)
@@ -197,7 +196,7 @@ func main() {
 		totalInserts = threads * ((numRows + int64(bulkInsertCount) - 1) / int64(bulkInsertCount))
 	)
 
-	fmt.Printf("Generating %d table(s) with %d rows (2KiB each) per table\n", threads, numRows)
+	log.Printf("Generating %d table(s) with %d rows (%d bytes each) per table\n", threads, numRows, rowSizeBytes)
 
 	rowsCh := make(chan []any, 2*threads)
 	go func() {
@@ -212,6 +211,11 @@ func main() {
 			// datagenDur := time.Since(start)
 		}
 	}()
+
+	// Init progress bar
+	fmt.Printf("total inserts: %d\n", totalInserts)
+	// bar := pb.StartNew(int(totalInserts))
+	bar := pb.Full.Start(int(totalInserts))
 
 	// Launch threads to create tables.
 	wg := sync.WaitGroup{}
@@ -243,10 +247,11 @@ func main() {
 				if err != nil {
 					panic(err)
 				}
+				bar.Increment()
 			}
 		}(fmt.Sprintf("table%03d", i))
 	}
 	wg.Wait()
 
-	fmt.Printf("done.\n")
+	bar.Finish()
 }
