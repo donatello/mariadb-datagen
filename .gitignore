@@ -1,0 +1,14 @@
+cover.out
+*~
+*.test
+release
+experimental
+coverage.txt
+*.tar.bz2
+parts/
+prime/
+stage/
+mariadb-datagen
+.run*
+.idea/
+mariadbdata
