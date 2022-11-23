@@ -12,5 +12,5 @@ mariadb-datagen
 .run*
 .idea/
 mariadbdata
-
+.gh-token
 dist/
