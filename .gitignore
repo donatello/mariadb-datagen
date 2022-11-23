@@ -12,3 +12,5 @@ mariadb-datagen
 .run*
 .idea/
 mariadbdata
+
+dist/
